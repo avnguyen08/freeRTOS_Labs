@@ -1,1 +1,0 @@
-Blinks LED at different specified rates using freeRTOS
