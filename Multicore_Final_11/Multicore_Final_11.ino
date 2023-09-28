@@ -33,6 +33,7 @@ volatile int buffer1[BUF_SIZE] = { 0 };  //1st buffer
 volatile int buffer2[BUF_SIZE] = { 0 };  //2nd buffer
 static TaskHandle_t task_cmd_line = NULL;
 static TaskHandle_t task_compute_avg = NULL;
+static TaskHandle_t task_core_interrupt = NULL;
 static hw_timer_t* timer = NULL;
 static SemaphoreHandle_t bin_sem;  // Waits for parameter to be written/read
 static SemaphoreHandle_t mutex;    // Waits for parameter to be written/read
@@ -65,7 +66,6 @@ void IRAM_ATTR Sample_Timer() {
     portYIELD_FROM_ISR();
   }
 }
-
 //Tasks
 //Task A: Read data buffer, average data inside, and make it adc_avg new value
 void compute_avg(void* parameters) {
@@ -80,8 +80,7 @@ void compute_avg(void* parameters) {
       } else if (flag_buf == false) {
         adc_avg = avg_of_array(buffer1, BUF_SIZE);  // average buffer 1
       }
-    }
-    else {
+    } else {
       Serial.println("Error: Unable to obtain mutex");
     }
 
@@ -128,6 +127,19 @@ void cmd_line(void* parameters) {
     vTaskDelay(100 / portTICK_PERIOD_MS);
   }
 }
+//Task dedicated to making a timer interrupt on core 0
+void my_core_interrupt(void* parameters) {
+
+  // Create and start timer (num, divider, countUp)
+  timer = timerBegin(0, timer_divider, true);
+  // Provide ISR to timer (timer, function, edge)
+  timerAttachInterrupt(timer, &Sample_Timer, true);
+  // At what count should ISR trigger (timer, count, autoreload)
+  timerAlarmWrite(timer, timer_max_count, true);
+  // Allow ISR to trigger
+  timerAlarmEnable(timer);
+  vTaskDelete(NULL);
+}
 float avg_of_array(volatile int* arr, int size) {
   float sum = 0;
   for (int i = 0; i < size; ++i) {
@@ -152,17 +164,11 @@ void setup() {
   }
   xSemaphoreGive(mutex);
 
-  // Create and start timer (num, divider, countUp)
-  timer = timerBegin(0, timer_divider, true);
-  // Provide ISR to timer (timer, function, edge)
-  timerAttachInterrupt(timer, &Sample_Timer, true);
-  // At what count should ISR trigger (timer, count, autoreload)
-  timerAlarmWrite(timer, timer_max_count, true);
-  // Allow ISR to trigger
-  timerAlarmEnable(timer);
 
-  xTaskCreatePinnedToCore(cmd_line, "command line", 1024, NULL, 1, &task_cmd_line, app_cpu);
-  xTaskCreatePinnedToCore(compute_avg, "Compute Average", 1024, NULL, 1, &task_compute_avg, app_cpu);
+  xTaskCreatePinnedToCore(cmd_line, "command line", 1024, NULL, 1, &task_cmd_line, 1);
+  xTaskCreatePinnedToCore(compute_avg, "Compute Average", 1024, NULL, 1, &task_compute_avg, 0);
+  xTaskCreatePinnedToCore(my_core_interrupt, "Core 0 Interrupt Attach", 1024, NULL, 0, &task_core_interrupt, 0);
+
   Serial.println("Finished Task Creation");
   vTaskDelay(1000 / portTICK_PERIOD_MS);
   vTaskDelete(NULL);
